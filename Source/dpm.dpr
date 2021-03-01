@@ -116,7 +116,6 @@ uses
   DPM.Core.Project.Editor in 'Core\Project\DPM.Core.Project.Editor.pas',
   DPM.Core.Project.GroupProjReader in 'Core\Project\DPM.Core.Project.GroupProjReader.pas',
   DPM.Core.Project.Interfaces in 'Core\Project\DPM.Core.Project.Interfaces.pas',
-  DPM.Core.Project.PackageReference in 'Core\Project\DPM.Core.Project.PackageReference.pas',
   DPM.Core.Repository.Base in 'Core\Repository\DPM.Core.Repository.Base.pas',
   DPM.Core.Repository.BaseGithub in 'Core\Repository\DPM.Core.Repository.BaseGithub.pas',
   DPM.Core.Repository.Directory in 'Core\Repository\DPM.Core.Repository.Directory.pas',
@@ -178,12 +177,11 @@ uses
   GDIPOBJ2 in 'SVG\GDIPOBJ2.pas',
   GDIPPathText in 'SVG\GDIPPathText.pas',
   SVGColor in 'SVG\SVGColor.pas',
-  DPM.Core.Package.Icon in 'Core\Package\DPM.Core.Package.Icon.pas';
+  DPM.Core.Package.Icon in 'Core\Package\DPM.Core.Package.Icon.pas',
+  DPM.Core.Compiler.BOM in 'Core\Compiler\DPM.Core.Compiler.BOM.pas',
+  DPM.Core.Compiler.ProjectSettings in 'Core\Compiler\DPM.Core.Compiler.ProjectSettings.pas';
 
 begin
-  //TODO : pull in VSoft.SemanticVersion as a package once we are bootstrapped.
-  //TODO : pull in VSoft.CommmandLine as a package once we are bootstrapped.
-  //TODO : pull in VSoft.AntPatterns as a package once we are bootstrapped.
   CoInitializeEx(nil, COINIT_MULTITHREADED); //needed for msxml
   try
     System.ExitCode := Ord(TDPMConsoleApplication.Run);

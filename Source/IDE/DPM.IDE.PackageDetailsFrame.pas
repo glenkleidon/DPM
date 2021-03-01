@@ -136,6 +136,7 @@ begin
     options.Version := TPackageVersion.Parse(FPackageMetaData.Version);
     options.ProjectPath := FProjectFile;
     options.Platforms := [ProjectPlatformToDPMPlatform(FPackageSearcher.GetCurrentPlatform)];
+    options.Prerelease := FIncludePreRelease;
 
     //install will fail if a package is already installed, unless you specify force.
     if btnInstallOrUpdate.Caption = 'Update' then
@@ -382,7 +383,7 @@ procedure TPackageDetailsFrame.OnDetailsUriClick(Sender : TObject; const uri : s
 begin
   case element of
     deNone : ;
-    deLicense : ;
+    deLicense,
     deProjectUrl,
     deReportUrl : ShellExecute(Application.Handle, 'open', PChar(uri), nil, nil, SW_SHOWNORMAL);
     deTags : ;

@@ -182,22 +182,6 @@ begin
       TInstallOptions.Default.ProjectPath := value;
     end);
 
-  //option.Required := true;
-
-
-//  option := cmd.RegisterOption<string>('packageFile','pf', 'Use the specified package file rather than from the cache or a feed',
-//   procedure(const value : string)
-//    begin
-//      TInstallOptions.Default.PackageFile := value;
-//    end);
-//
-//  option := cmd.RegisterOption<string>('projectPath','pp', 'The path to the dproj, or a folder containing 1 or more dproj files. Defaults to current directory.',
-//   procedure(const value : string)
-//    begin
-//      TInstallOptions.Default.ProjectPath := value;
-//    end);
-//
-
   option := cmd.RegisterOption<string>('version','', 'The package version to install, if not specified the latest will be downloaded',
    procedure(const value : string)
     begin
@@ -256,12 +240,18 @@ begin
     end);
   option.HasValue := false;
 
+  option := cmd.RegisterOption<boolean>('useSource','us', 'Reference package source rather than compiling it.',
+   procedure(const value : boolean)
+    begin
+      TInstallOptions.Default.UseSource := value;
+    end);
+  option.HasValue := false;
 
 
   cmd.Examples.Add('install VSoft.CommandLine');
-  cmd.Examples.Add('install VSoft.CommandLine -version=1.0.1 -projectPath=c:\myprojects\project1.dproj');
-  cmd.Examples.Add('install Spring.Base -projectPath=c:\myprojects -compiler=10.3');
-  cmd.Examples.Add('install DUnitX.Framework -projectPath=c:\myproject\tests\mytest.dproj -compiler=10.3 -platforms=Win32,Win64,OSX32');
+  cmd.Examples.Add('install VSoft.CommandLine -version=1.0.1 c:\myprojects\project1.dproj');
+  cmd.Examples.Add('install Spring.Base c:\myprojects -compiler=10.3');
+  cmd.Examples.Add('install DUnitX.Framework c:\myproject\tests\mytest.dproj -compiler=10.3 -platforms=Win32,Win64,OSX32');
 end;
 
 procedure RegisterListCommand;
@@ -786,6 +776,13 @@ begin
       TUninstallOptions.Default.ProjectPath := value;
     end);
 
+  option := cmd.RegisterOption<string>('compiler','c', 'The delphi compiler version to target. ',
+   procedure(const value : string)
+    begin
+      TUninstallOptions.Default.CompilerVersion := StringToCompilerVersion(value);
+      if TUninstallOptions.Default.CompilerVersion = TCompilerVersion.UnknownVersion then
+        raise EArgumentException.Create('Invalid compiler version : ' + value);
+    end);
 
   option := cmd.RegisterOption<string>('platforms','p', 'The platforms to install for (comma separated). Default is to install for all platforms the project targets.',
    procedure(const value : string)

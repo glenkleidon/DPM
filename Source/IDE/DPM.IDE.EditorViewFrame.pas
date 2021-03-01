@@ -49,6 +49,7 @@ uses
   DPM.IDE.IconCache,
   DPM.Core.Types,
   DPM.Core.Logging,
+  DPM.Core.Dependency.Interfaces,
   DPM.IDE.Logger,
   DPM.Core.Configuration.Interfaces,
   DPM.Core.Options.Search,
@@ -153,7 +154,7 @@ type
 
     FGotConflicts : boolean;
 
-    FPackageReferences : IList<IPackageReference>;
+    FPackageReferences : IGraphNode;
 
     FSearchOptions : TSearchOptions;
     FSearchSkip : integer;
@@ -162,6 +163,7 @@ type
     FUpdates : IList<IPackageSearchResultItem>;
     //true when we first load the view
     FFirstView : boolean;
+    FHasSources : boolean;
     procedure FilterAndLoadInstalledPackages(const searchTxt : string);
   protected
     procedure SwitchTabs(const currentTab : TCurrentTab; const refresh : boolean);
@@ -491,21 +493,24 @@ begin
     end, FCancelTokenSource.Token);
 end;
 
-function FindPackageRef(const references : IList<IPackageReference>; const platform : TDPMPlatform; const searchItem : IPackageSearchResultItem) : IPackageReference;
+function FindPackageRef(const references : IGraphNode; const platform : TDPMPlatform; const searchItem : IPackageSearchResultItem) : IGraphNode;
 var
-  ref : IPackageReference;
+  ref : IGraphNode;
 begin
   result := nil;
-  for ref in references do
+  if (references = nil) or (not references.HasChildren) then
+    exit;
+
+  for ref in references.ChildNodes do
   begin
     if ref.Platform <> platform then
       continue;
 
     if SameText(ref.Id, searchItem.Id) then
       Exit(ref);
-    if ref.HasDependencies then
+    if ref.HasChildren then
     begin
-      result := FindPackageRef(ref.Dependencies, platform, searchItem);
+      result := FindPackageRef(ref, platform, searchItem);
       if result <> nil then
         Exit(result);
     end;
@@ -546,7 +551,7 @@ begin
   result := TAsync.Configure < IList<IPackageSearchResultItem> > (
     function(const cancelToken : ICancellationToken) : IList<IPackageSearchResultItem>
     var
-      packageRef : IPackageReference;
+      packageRef : IGraphNode;
       item : IPackageSearchResultItem;
     begin
       result := TCollections.CreateList<IPackageSearchResultItem>;
@@ -563,9 +568,12 @@ begin
         result := repoManager.GetInstalledPackageFeed(cancelToken, options, GetPackageIdsFromReferences(ProjectPlatformToDPMPlatform(FProject.CurrentPlatform)), FConfiguration);
         for item in result do
         begin
-          packageRef := FindPackageRef(FPackageReferences, FCurrentPlatform, item);
-          if packageRef <> nil then
-            item.IsTransitive := packageRef.IsTransitive;
+          if FPackageReferences <> nil then
+          begin
+            packageRef := FindPackageRef(FPackageReferences, FCurrentPlatform, item);
+            if packageRef <> nil then
+              item.IsTransitive := packageRef.IsTransitive;
+          end;
         end;
         FLogger.Debug('DPMIDE : Got Installed package metadata.');
       end;
@@ -576,11 +584,11 @@ end;
 function TDPMEditViewFrame.GetPackageIdsFromReferences(const platform : TDPMPlatform) : IList<IPackageId>;
 var
   lookup : IDictionary<string, IPackageId>;
-  packageRef : IPackageReference;
+  packageRef : IGraphNode;
 
-  procedure AddPackageIds(const value : IPackageReference);
+  procedure AddPackageIds(const value : IGraphNode);
   var
-    childRef : IPackageReference;
+    childRef : IGraphNode;
   begin
     if not (value.Platform = platform) then
       exit;
@@ -588,19 +596,21 @@ var
     if not lookup.ContainsKey(Lowercase(value.Id)) then
       lookup[Lowercase(value.Id)] := value;
 
-    for childRef in value.Dependencies do
+    for childRef in value.ChildNodes do
       AddPackageIds(childRef);
   end;
 
 begin
   lookup := TCollections.CreateDictionary < string, IPackageId > ;
   result := TCollections.CreateList<IPackageId>;
-
-  for packageRef in FPackageReferences do
+  if FPackageReferences <> nil then
   begin
-    AddPackageIds(packageRef);
+    for packageRef in FPackageReferences.ChildNodes do
+    begin
+      AddPackageIds(packageRef);
+    end;
+    result.AddRange(lookup.Values);
   end;
-  result.AddRange(lookup.Values);
 end;
 
 function TDPMEditViewFrame.GetUpdatedPackages : IAwaitable<IList<IPackageSearchResultItem>>;
@@ -767,7 +777,7 @@ begin
       FCurrentPlatform := projectPlatform;
       projectEditor := TProjectEditor.Create(FLogger, FConfiguration, IDECompilerVersion);
       projectEditor.LoadProject(FProject.FileName);
-      FPackageReferences := projectEditor.PackageReferences;
+      FPackageReferences := projectEditor.GetPackageReferences(FCurrentPlatform); //NOTE : Can return nil. Will change internals to return empty root node.
       //TODO : need to do this more safely as it may interrup another operation.
       FInstalledPackages := nil;  //force refresh as we always need to update the installed packages.
       FAllInstalledPackages := nil;
@@ -806,11 +816,19 @@ begin
 
   cbSources.Items.Add('All');
 
-  for source in FConfiguration.Sources do
+  if FConfiguration.Sources.Any then
   begin
-    if source.IsEnabled then
-      cbSources.Items.Add(source.Name);
-  end;
+    for source in FConfiguration.Sources do
+    begin
+      if source.IsEnabled then
+      begin
+        cbSources.Items.Add(source.Name);
+        FHasSources := true;
+      end;
+    end;
+  end
+  else
+    FHasSources := false;
 
   if sCurrent <> '' then
   begin
@@ -922,7 +940,12 @@ begin
   if FRequestInFlight then
     ACanvas.TextOut(20, 20, 'Loading....')
   else
-    ACanvas.TextOut(20, 20, 'No Packages found');
+  begin
+    if  FHasSources then
+      ACanvas.TextOut(20, 20, 'No Packages found')
+    else
+      ACanvas.TextOut(20, 20, 'No enabled package sources, add a package source in DPM settings.')
+  end;
 end;
 
 procedure TDPMEditViewFrame.ScrollListPaintRow(const Sender : TObject; const ACanvas : TCanvas; const itemRect : TRect; const index : Int64; const state : TPaintRowState);
@@ -1306,7 +1329,7 @@ begin
       procedure(const theResult : IList<IPackageSearchResultItem>)
       var
         item : IPackageSearchResultItem;
-        packageRef : IPackageReference;
+        packageRef : IGraphNode;
       begin
         FRequestInFlight := false;
         //if the view is closing do not do anything else.
@@ -1440,6 +1463,7 @@ begin
 
   //load our dpm configuration
   FConfigurationManager := FContainer.Resolve<IConfigurationManager>;
+  FConfigurationManager.EnsureDefaultConfig;
   FConfiguration := FConfigurationManager.LoadConfig(FSearchOptions.ConfigFile);
 
   PackageDetailsFrame.Init(FContainer, FIconCache, FConfiguration, Self, FProject.FileName);
