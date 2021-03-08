@@ -81,6 +81,7 @@ type
                                const packagesToCompile : IList<IPackageInfo>; const compiledPackages : IList<IPackageInfo>; packageSpecs : IDictionary<string, IPackageSpec>;
                                const options : TSearchOptions) : boolean;
 
+    function CopyLocal(const cancellationToken : ICancellationToken; const resolvedPackages : IList<IPackageInfo>; const packageSpecs : IDictionary<string, IPackageSpec>; const projectEditor :  IProjectEditor; const platform : TDPMPlatform) : boolean;
 
     function DoRestoreProject(const cancellationToken : ICancellationToken; const options : TRestoreOptions; const projectFile : string; const projectEditor : IProjectEditor; const platform : TDPMPlatform; const config : IConfiguration) : boolean;
 
@@ -139,6 +140,7 @@ uses
   DPM.Core.Constants,
   DPM.Core.Compiler.BOM,
   DPM.Core.Utils.Path,
+  DPM.Core.Utils.Files,
   DPM.Core.Utils.System,
   DPM.Core.Project.Editor,
   DPM.Core.Project.GroupProjReader,
@@ -348,7 +350,7 @@ begin
 
   for buildEntry in packageSpec.TargetPlatform.BuildEntries do
   begin
-    FLogger.Information('Building package : ' + buildEntry.Project);
+    FLogger.Information('Building project : ' + buildEntry.Project);
 
     projectFile := TPath.Combine(packagePath, buildEntry.Project);
     projectFile := TPathUtils.CompressRelativePath('',projectFile);
@@ -391,14 +393,15 @@ begin
         compiler.SetSearchPaths(nil);
 
       FLogger.Information('Building project [' + projectFile + '] for design time...');
-      result := compiler.BuildProject(cancellationToken, projectFile, buildEntry.Config, true);
+      result := compiler.BuildProject(cancellationToken, projectFile, buildEntry.Config, packageInfo.Version, true);
       if result then
-        FLogger.Success('Ok.')
+        FLogger.Success('Project [' + buildEntry.Project + '] build succeeded.')
       else
       begin
-        FLogger.Error('Building project [' + projectFile + '] failed.');
+        FLogger.Error('Building project [' + buildEntry.Project + '] failed.');
         exit;
       end;
+      FLogger.NewLine;
 
     end
     else
@@ -426,15 +429,15 @@ begin
         compiler.SetSearchPaths(nil);
 
 
-      result := compiler.BuildProject(cancellationToken, projectFile, buildEntry.Config);
+      result := compiler.BuildProject(cancellationToken, projectFile, buildEntry.Config, packageInfo.Version );
       if result then
-        FLogger.Success('Ok.')
+        FLogger.Success('Project [' + buildEntry.Project + '] build succeeded.')
       else
       begin
-        FLogger.Error('Building project [' + projectFile + '] failed.');
+        FLogger.Error('Building project [' + buildEntry.Project + '] failed.');
         exit;
       end;
-
+      FLogger.NewLine;
 
       if buildEntry.BuildForDesign and (compiler.Platform <> TDPMPlatform.Win32) then
       begin
@@ -458,12 +461,12 @@ begin
         else
           compiler.SetSearchPaths(nil);
 
-        result := compiler.BuildProject(cancellationToken, projectFile, buildEntry.Config, true);
+        result := compiler.BuildProject(cancellationToken, projectFile, buildEntry.Config, packageInfo.Version, true);
         if result then
-          FLogger.Success('Project [' + projectFile + '] Compiled for designtime Ok.')
+          FLogger.Success('Project [' + buildEntry.Project + '] Compiled for designtime Ok.')
         else
         begin
-          FLogger.Error('Building project [' + projectFile + '] failed.');
+          FLogger.Error('Building project [' + buildEntry.Project + '] failed.');
           exit;
         end;
 
@@ -486,6 +489,112 @@ end;
 function TPackageInstaller.Context : IPackageInstallerContext;
 begin
   result := FContext;
+end;
+
+function TPackageInstaller.CopyLocal(const cancellationToken : ICancellationToken;const resolvedPackages: IList<IPackageInfo>; const packageSpecs: IDictionary<string, IPackageSpec>;
+                                      const projectEditor: IProjectEditor; const platform: TDPMPlatform): boolean;
+var
+  configName : string;
+  projectConfig : IProjectConfiguration;
+  packageSpec : IPackageSpec;
+  resolvedPackage : IPackageInfo;
+  configNames : IReadOnlyList<string>;
+  outputDir : string;
+  lastOutputDir : string;
+  bplSourceFile : string;
+  bplTargetFile : string;
+  packageFolder : string;
+  runtimeCopyLocalFiles : TArray<ISpecBPLEntry>;
+  runtimeEntry : ISpecBPLEntry;
+
+begin
+  result := true;
+
+  configNames := projectEditor.GetConfigNames;
+
+  for resolvedPackage in resolvedPackages do
+  begin
+    packageSpec := packageSpecs[LowerCase(resolvedPackage.Id)];
+    Assert(packageSpec <> nil);
+    //FLogger.Debug('Copylocal for package [' + resolvedPackage.Id + ']');
+
+    //TODO : Is there any point in the copylocal option now.. shouldn't all runtime bpls be copied?
+    runtimeCopyLocalFiles := packageSpec.TargetPlatform.RuntimeFiles.Where(
+      function(const entry : ISpecBPLEntry) : boolean
+      begin
+        result := entry.CopyLocal;
+      end).ToArray;
+
+    //if no runtime bpl's are defined with copylocal in the dspec then there is nothing to do.
+    if Length(runtimeCopyLocalFiles) = 0 then
+      continue;
+
+    lastOutputDir := '';
+    packageFolder := FPackageCache.GetPackagePath(resolvedPackage);
+    //FLogger.Debug('Package folder [' + packageFolder + ']');
+
+    for configName in configNames do
+    begin
+      if configName = 'Base' then
+        continue;
+      //FLogger.Debug('Config [' + configName + ']');
+
+      projectConfig := projectEditor.GetProjectConfiguration(configName, platform);
+      //we're only doing this for projects using runtime configs.
+      if not projectConfig.UsesRuntimePackages then
+        continue;
+
+      //FLogger.Debug('uses runtime packages');
+
+
+      outputDir := projectConfig.OutputDir;
+      if (outputDir <> '') and  (not SameText(outputDir, lastOutputDir)) then
+      begin
+        lastOutputDir := outputDir;
+
+        for runtimeEntry in runtimeCopyLocalFiles do
+        begin
+          bplSourceFile := TPath.Combine(packageFolder,runtimeEntry.Source);
+          if not FileExists(bplSourceFile) then
+          begin
+            FLogger.Warning('Unabled to find runtime package [' + bplSourceFile + '] during copy local');
+            continue;
+          end;
+          bplTargetFile := TPath.Combine(outputDir, ExtractFileName(bplSourceFile));
+
+          if TPathUtils.IsRelativePath(bplTargetFile) then
+          begin
+            bplTargetFile := TPath.Combine(ExtractFilePath(projectEditor.ProjectFile),bplTargetFile);
+            bplTargetFile := TPathUtils.CompressRelativePath('',bplTargetFile );
+          end;
+
+          //if the file exists already, then we need to work out if they are the same or not.
+          if FileExists(bplTargetFile) and TFileUtils.AreSameFiles(bplSourceFile, bplTargetFile) then
+            continue;
+          //now actually copy files.
+          try
+            ForceDirectories(ExtractFilePath(bplTargetFile));
+            TFile.Copy(bplSourceFile, bplTargetFile, true);
+          except
+            on e : Exception do
+            begin
+              FLogger.Warning('Unable to copy runtime package [' + bplSourceFile + '] to [' + bplTargetFile + '] during copy local');
+              FLogger.Warning('  ' + e.Message);
+            end;
+          end;
+        end;
+      end;
+    end;
+
+
+
+
+  end;
+
+
+
+
+
 end;
 
 constructor TPackageInstaller.Create(const logger : ILogger; const configurationManager : IConfigurationManager;
@@ -736,6 +845,9 @@ begin
   if not CollectSearchPaths(projectPackageGraph, resolvedPackages, compiledPackages, projectEditor.CompilerVersion, platform, packageSearchPaths) then
     exit;
 
+  if not CopyLocal(cancellationToken, resolvedPackages, packageSpecs, projectEditor, platform) then
+    exit;
+
   if not projectEditor.AddSearchPaths(platform, packageSearchPaths, config.PackageCacheLocation) then
     exit;
 
@@ -796,6 +908,9 @@ begin
     exit;
 
   if not CollectSearchPaths(projectPackageGraph, resolvedPackages, compiledPackages, projectEditor.CompilerVersion, platform, packageSearchPaths) then
+    exit;
+
+  if not CopyLocal(cancellationToken, resolvedPackages, packageSpecs, projectEditor, platform) then
     exit;
 
   if not projectEditor.AddSearchPaths(platform, packageSearchPaths, config.PackageCacheLocation) then
@@ -1252,6 +1367,10 @@ function TPackageInstaller.Install(const cancellationToken : ICancellationToken;
 var
   projectFiles : TArray<string>;
   config : IConfiguration;
+  groupProjReader : IGroupProjectReader;
+  projectList : IList<string>;
+  i : integer;
+  projectRoot : string;
 begin
   result := false;
   try
@@ -1280,12 +1399,32 @@ begin
 
     if FileExists(options.ProjectPath) then
     begin
-      if ExtractFileExt(options.ProjectPath) <> '.dproj' then
+      if ExtractFileExt(options.ProjectPath) = '.groupproj' then
       begin
-        FLogger.Error('Unsupported project file type [' + options.ProjectPath + ']');
+        groupProjReader := TGroupProjectReader.Create(FLogger);
+        if not groupProjReader.LoadGroupProj(options.ProjectPath) then
+          exit;
+
+        projectList := TCollections.CreateList <string> ;
+        if not groupProjReader.ExtractProjects(projectList) then
+          exit;
+
+        //projects in a project group are likely to be relative, so make them full paths
+        projectRoot := ExtractFilePath(options.ProjectPath);
+        for i := 0 to projectList.Count - 1 do
+        begin
+          //sysutils.IsRelativePath returns false with paths starting with .\
+          if TPathUtils.IsRelativePath(projectList[i]) then
+            //TPath.Combine really should do this but it doesn't
+            projectList[i] := TPathUtils.CompressRelativePath(projectRoot, projectList[i])
+        end;
+        projectFiles := projectList.ToArray;
+      end
+      else
+      begin
+        SetLength(projectFiles, 1);
+        projectFiles[0] := options.ProjectPath;
       end;
-      SetLength(projectFiles, 1);
-      projectFiles[0] := options.ProjectPath;
 
     end
     else if DirectoryExists(options.ProjectPath) then
@@ -1332,6 +1471,7 @@ var
   packageIdString : string;
   packageIdentity : IPackageIdentity;
   projectFile : string;
+  i : integer;
 begin
   //get the package into the cache first then just install as normal
   result := FPackageCache.InstallPackageFromFile(options.PackageFile, true);
@@ -1352,10 +1492,15 @@ begin
 
   FContext.Reset;
   try
-    for projectFile in projectFiles do
+    for i := 0 to Length(projectFiles) -1 do
     begin
       if cancellationToken.IsCancelled then
         exit;
+      if TPathUtils.IsRelativePath(projectFile) then
+      begin
+        projectFile := TPath.Combine(GetCurrentDir, projectFile);
+        projectFile := TPathUtils.CompressRelativePath(projectFile);
+      end;
       result := InstallPackage(cancellationToken, options, projectFile, config) and result;
     end;
 
@@ -1368,14 +1513,22 @@ end;
 function TPackageInstaller.InstallPackageFromId(const cancellationToken : ICancellationToken; const options : TInstallOptions; const projectFiles : TArray <string> ; const config : IConfiguration) : boolean;
 var
   projectFile : string;
+  i : integer;
 begin
   result := true;
   FContext.Reset;
   try
-    for projectFile in projectFiles do
+    for i := 0 to Length(projectFiles) - 1 do
     begin
       if cancellationToken.IsCancelled then
         exit;
+      projectFile := projectFiles[0];
+      if TPathUtils.IsRelativePath(projectFile) then
+      begin
+        projectFile := TPath.Combine(GetCurrentDir, projectFile);
+        projectFile := TPathUtils.CompressRelativePath(projectFile);
+      end;
+
       result := InstallPackage(cancellationToken, options, projectFile, config) and result;
     end;
   finally
@@ -1476,10 +1629,18 @@ begin
 
     result := true;
     //TODO : create some sort of context object here to pass in so we can collect runtime/design time packages
-    for projectFile in projectFiles do
+    for i := 0  to Length(projectFiles) -1 do
     begin
       if cancellationToken.IsCancelled then
         exit;
+      projectFile := projectFiles[i];
+
+      if TPathUtils.IsRelativePath(projectFile) then
+      begin
+        projectFile := TPath.Combine(GetCurrentDir, projectFile);
+        projectFile := TPathUtils.CompressRelativePath(projectFile);
+      end;
+
       result := RestoreProject(cancellationToken, options, projectFile, config) and result;
     end;
   except
